@@ -2,11 +2,10 @@
 
 use Illuminate\Support\Facades\Route;
 
+Route::redirect('/', '/login');
+
 Route::view('/login', 'auth.login')->name('login');
 
-Route::get('/', function () {
-    return view('welcome');
-});
 Route::get('/admin', function () {
     $account = auth('web')->user();
 
