@@ -1,0 +1,22 @@
+Add this import to routes/api.php with the other controller imports:
+
+use App\Http\Controllers\Api\ScheduleShiftRequestController;
+
+Add these four routes once, near the existing schedule route declarations. Do not remove the existing GET /schedules/admin.php route:
+
+Route::get('/schedules/my.php', [ScheduleShiftRequestController::class, 'mySchedule'])
+    ->middleware('auth:sanctum');
+Route::match(['get', 'post'], '/schedules/manager.php', [ScheduleShiftRequestController::class, 'managerSchedule'])
+    ->middleware('auth:sanctum');
+Route::match(['get', 'post'], '/shift-requests/my.php', [ScheduleShiftRequestController::class, 'myShiftRequests'])
+    ->middleware('auth:sanctum');
+Route::match(['get', 'post'], '/shift-requests/manager.php', [ScheduleShiftRequestController::class, 'managerShiftRequests'])
+    ->middleware('auth:sanctum');
+
+After saving, run:
+php -l app\Http\Controllers\Api\ScheduleShiftRequestController.php
+php artisan route:clear
+php artisan route:list --path=api/schedules
+php artisan route:list --path=api/shift-requests
+
+Important: This controller implements the paths and basic behavior of the original endpoints in the project ZIP. Before using schedule save/approval on production data, test locally first.

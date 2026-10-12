@@ -1,0 +1,19 @@
+Add these route registrations in routes/api.php, after the existing /leave/list.php route. Keep all existing route registrations. Do not paste the PHP opening tag again.
+
+Route::post('/leave/create.php', [LeaveApiController::class, 'create'])
+    ->middleware('auth:sanctum');
+Route::get('/leave/my-requests.php', [LeaveApiController::class, 'myRequests'])
+    ->middleware('auth:sanctum');
+Route::get('/leave/team-list.php', [LeaveApiController::class, 'teamList'])
+    ->middleware('auth:sanctum');
+Route::post('/leave/admin-create.php', [LeaveApiController::class, 'adminCreate'])
+    ->middleware('auth:sanctum');
+Route::post('/leave/update-status.php', [LeaveApiController::class, 'updateStatus'])
+    ->middleware('auth:sanctum');
+Route::post('/leave/manager-update-status.php', [LeaveApiController::class, 'managerUpdateStatus'])
+    ->middleware('auth:sanctum');
+
+If this import is not already in the imports section of routes/api.php, add it:
+use App\Http\Controllers\Api\LeaveApiController;
+
+The existing GET /leave/list.php route must remain registered to LeaveApiController@index.

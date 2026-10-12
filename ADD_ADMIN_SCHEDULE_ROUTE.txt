@@ -1,0 +1,6 @@
+In routes/api.php, keep the existing ScheduleApiController import.
+Replace the existing GET-only admin schedule route:
+Route::get('/schedules/admin.php', [ScheduleApiController::class, 'admin'])->middleware('auth:sanctum');
+with:
+Route::match(['get', 'post'], '/schedules/admin.php', [ScheduleApiController::class, 'admin'])->middleware('auth:sanctum');
+This keeps the current route name and allows the original GET and POST actions.

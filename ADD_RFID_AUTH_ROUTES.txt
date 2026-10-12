@@ -1,0 +1,8 @@
+1. Add this import with the other imports in routes/api.php:
+use App\Http\Controllers\Api\RfidAuthController;
+
+2. Add these routes in routes/api.php:
+Route::post('/auth/rfid-login.php', [RfidAuthController::class, 'login']);
+Route::post('/employees/verify-admin-rfid.php', [RfidAuthController::class, 'verifyAdminRfid'])->middleware('auth:sanctum');
+
+Keep the existing routes. Save routes/api.php.

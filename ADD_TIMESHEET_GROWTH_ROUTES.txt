@@ -1,0 +1,31 @@
+Add this import alongside the other controller imports in routes/api.php:
+
+use App\Http\Controllers\Api\EmployeeTimesheetGrowthController;
+
+Add these three routes alongside the other API routes (keep all existing routes):
+
+Route::get('/timesheet/my.php', [
+    EmployeeTimesheetGrowthController::class,
+    'myTimesheet',
+])->middleware('auth:sanctum');
+
+Route::get('/timesheet/manager.php', [
+    EmployeeTimesheetGrowthController::class,
+    'managerTimesheets',
+])->middleware('auth:sanctum');
+
+Route::get('/growth/my.php', [
+    EmployeeTimesheetGrowthController::class,
+    'myGrowth',
+])->middleware('auth:sanctum');
+
+Verification commands (run separately in PowerShell):
+php -l app\Http\Controllers\Api\EmployeeTimesheetGrowthController.php
+php artisan route:clear
+php artisan route:list --path=api/timesheet
+php artisan route:list --path=api/growth
+
+Notes:
+- This is an API migration patch. Do not add migrations or run seeders.
+- Test employee/manager views while logged in as the matching role.
+- Timesheet reviews/approval actions remain handled by the existing /api/timesheet-approvals.php endpoint.

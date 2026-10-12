@@ -1,0 +1,14 @@
+Add this import to routes/api.php with the other controller imports:
+use App\Http\Controllers\Api\AccountProfileController;
+
+Add these routes to routes/api.php. Keep all existing routes:
+
+Route::match(['get', 'post'], '/account/profile.php', [
+    AccountProfileController::class,
+    'profile',
+])->middleware('auth:sanctum');
+
+Route::post('/account/profile-photo.php', [
+    AccountProfileController::class,
+    'photo',
+])->middleware('auth:sanctum');

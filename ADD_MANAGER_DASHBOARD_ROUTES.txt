@@ -1,0 +1,11 @@
+Add this import to routes/api.php alongside the other controller imports:
+use App\Http\Controllers\Api\ManagerWorkforceController;
+
+Add these routes after the existing attendance routes. Keep existing routes:
+
+Route::get('/attendance/team-today.php', [ManagerWorkforceController::class, 'teamToday'])
+    ->middleware('auth:sanctum');
+Route::get('/analytics/manager.php', [ManagerWorkforceController::class, 'analytics'])
+    ->middleware('auth:sanctum');
+Route::get('/analytics/manager-summary.php', [ManagerWorkforceController::class, 'summary'])
+    ->middleware('auth:sanctum');
