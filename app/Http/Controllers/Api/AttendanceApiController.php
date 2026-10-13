@@ -54,6 +54,14 @@ class AttendanceApiController extends Controller
                     ->where('lr.status', '=', 'approved');
             })
             ->where('e.employment_status', '<>', 'terminated')
+            // Admin accounts are not workforce employees and should not appear
+            // in the Today's Attendance employee table.
+            ->whereNotExists(function ($query) {
+                $query->select(DB::raw(1))
+                    ->from('accounts as admin_accounts')
+                    ->whereColumn('admin_accounts.employee_id', 'e.employee_id')
+                    ->where('admin_accounts.role', '=', 'admin');
+            })
             ->orderBy('e.employee_id')
             ->get([
                 'e.employee_id',

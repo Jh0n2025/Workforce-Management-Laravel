@@ -22,7 +22,7 @@
 
     const STORAGE_PREFIX = 'ht_';
     const STORAGE_VERSION = 'v2';
-    const API_URL = 'api/shared-data.php';
+    const API_URL = '/api/shared-data.php';
     const REQUEST_TIMEOUT_MS = 5000;
 
     function todayISO() {

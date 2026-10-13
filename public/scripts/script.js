@@ -12,7 +12,7 @@ function logout() {
     if (window.SharedData) SharedData.clearSession();
     sessionStorage.clear();
 
-    fetch('api/auth/logout.php', {
+    fetch('/api/auth/logout.php', {
         method: 'POST',
         credentials: 'same-origin'
     }).catch(() => { });
@@ -27,7 +27,7 @@ function logout() {
         const loginScreen = document.getElementById('login-screen');
         if (appWorkspace) appWorkspace.classList.add('hidden');
         if (loginScreen) loginScreen.classList.remove('hidden');
-        window.location.href = 'login.html';
+        window.location.replace('/login');
     }, 700);
 }
 

@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token() }}">
+    <script src="/scripts/api-fetch.js"></script>
     <title>Holiday Travelers - Admin Portal</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -312,18 +313,35 @@
         }
 
         function showLoginSuccess(data) {
-            if (data.role === 'admin') {
-                window.location.assign('/admin');
+            const role = String(data.role || '').toLowerCase();
+
+            const destinations = {
+                admin: '/admin',
+                manager: '/manager',
+                employee: '/employee'
+            };
+
+            const destination = destinations[role];
+
+            if (!destination) {
+                showFeedback(
+                    `Login successful, but the ${role || 'user'} dashboard is not connected.`,
+                    'success'
+                );
                 return;
             }
 
-            loginForm.classList.add('hidden');
-            otpPanel.classList.add('hidden');
+            // Preserve the session format expected by the existing dashboard scripts.
+            sessionStorage.setItem('ht_v2_session', JSON.stringify({
+                id: data.employee_id || data.account_id || null,
+                account_id: data.account_id || null,
+                employee_id: data.employee_id || null,
+                name: data.name || '',
+                email: data.email || '',
+                role: role
+            }));
 
-            showFeedback(
-                `Login successful. The ${data.role || 'user'} dashboard is not yet connected.`,
-                'success'
-            );
+            window.location.assign(destination);
         }
 
         // Password visibility

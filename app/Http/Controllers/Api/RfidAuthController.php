@@ -227,6 +227,51 @@ HTML;
         }
     }
 
+    /**
+     * Verify the currently authenticated Admin's login password as a fallback
+     * when their Admin RFID card is unavailable during employee editing.
+     */
+    public function verifyAdminPasswordForEdit(Request $request): JsonResponse
+    {
+        $admin = $request->user();
+        if (!$admin || $admin->role !== 'admin' || $admin->status !== 'active') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Active administrator access is required.',
+            ], 403);
+        }
+
+        $employeeId = trim((string) $request->input('employee_id', ''));
+        $password = (string) $request->input('password', '');
+
+        if ($employeeId === '' || $password === '') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Employee ID and Admin password are required.',
+            ], 422);
+        }
+
+        if (!Hash::check($password, (string) $admin->password_hash)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The Admin password is incorrect.',
+            ], 403);
+        }
+
+        $request->session()->put('employee_edit_rfid_authorization', [
+            'admin_account_id' => (int) $admin->id,
+            'employee_id' => $employeeId,
+            'verified_at' => time(),
+            'expires_at' => time() + 300,
+            'verification_method' => 'password',
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Admin password verified successfully.',
+        ]);
+    }
+
     private function maskEmail(string $email): string
     {
         $parts = explode('@', $email, 2);

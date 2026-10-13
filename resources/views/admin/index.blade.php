@@ -4,6 +4,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <script src="/scripts/api-fetch.js"></script>
     <title>Holiday Travelers - Admin Portal</title>
     @vite(['resources/css/app.css', 'resources/js/app.js'])
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" rel="stylesheet">
@@ -2901,6 +2903,32 @@
 
             </div>
 
+            <!-- Password fallback for Admins whose RFID card is unavailable -->
+            <div class="px-6 pb-6">
+                <div class="flex items-center gap-3 mb-4" aria-hidden="true">
+                    <div class="h-px flex-1 bg-border"></div>
+                    <div class="h-px flex-1 bg-border"></div>
+                </div>
+
+                <form id="admin-rfid-edit-password-form" onsubmit="verifyAdminPasswordForEdit(event)" class="space-y-3">
+                    <label for="admin-rfid-edit-password" class="block text-sm font-semibold text-primary">
+                        Admin Login Password
+                    </label>
+                    <div class="flex flex-col sm:flex-row gap-3">
+                        <input id="admin-rfid-edit-password" name="admin_password" type="password"
+                            autocomplete="current-password" required
+                            class="min-w-0 flex-1 rounded-xl border border-border bg-background px-4 py-3 text-sm text-primary focus:outline-none focus:ring-2 focus:ring-primary/30"
+                            placeholder="Enter your login password">
+                        <button id="admin-rfid-edit-password-submit" type="submit"
+                            class="shrink-0 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50">
+                            Verify Password
+                        </button>
+                    </div>
+                    <p id="admin-rfid-edit-password-message" class="hidden text-sm rounded-lg px-3 py-2" role="status"
+                        aria-live="polite"></p>
+                </form>
+            </div>
+
         </div>
     </div>
 
@@ -4231,6 +4259,19 @@
 
             input.value = '';
 
+            const passwordInput = document.getElementById('admin-rfid-edit-password');
+            const passwordMessage = document.getElementById('admin-rfid-edit-password-message');
+            const passwordSubmit = document.getElementById('admin-rfid-edit-password-submit');
+            if (passwordInput) passwordInput.value = '';
+            if (passwordMessage) {
+                passwordMessage.textContent = '';
+                passwordMessage.className = 'hidden text-sm rounded-lg px-3 py-2';
+            }
+            if (passwordSubmit) {
+                passwordSubmit.disabled = false;
+                passwordSubmit.textContent = 'Verify Password';
+            }
+
             setTimeout(() => {
                 input.focus();
             }, 150);
@@ -4261,6 +4302,18 @@
             modal.classList.add('hidden');
 
             input.value = '';
+            const passwordInput = document.getElementById('admin-rfid-edit-password');
+            const passwordMessage = document.getElementById('admin-rfid-edit-password-message');
+            const passwordSubmit = document.getElementById('admin-rfid-edit-password-submit');
+            if (passwordInput) passwordInput.value = '';
+            if (passwordMessage) {
+                passwordMessage.textContent = '';
+                passwordMessage.className = 'hidden text-sm rounded-lg px-3 py-2';
+            }
+            if (passwordSubmit) {
+                passwordSubmit.disabled = false;
+                passwordSubmit.textContent = 'Verify Password';
+            }
 
             laser.classList.add('hidden', 'opacity-0');
 
@@ -4296,6 +4349,89 @@
             );
         }
 
+
+        async function verifyAdminPasswordForEdit(event) {
+            event.preventDefault();
+
+            const passwordInput = document.getElementById('admin-rfid-edit-password');
+            const message = document.getElementById('admin-rfid-edit-password-message');
+            const submit = document.getElementById('admin-rfid-edit-password-submit');
+            const status = document.getElementById('admin-rfid-edit-status');
+            const password = passwordInput ? passwordInput.value : '';
+
+            if (!currentProfileEmployeeId || !password) {
+                if (message) {
+                    message.textContent = 'Enter your Admin login password.';
+                    message.className = 'text-sm rounded-lg px-3 py-2 bg-red-50 text-red-700';
+                }
+                return;
+            }
+
+            if (submit) {
+                submit.disabled = true;
+                submit.textContent = 'Verifying...';
+            }
+            if (message) {
+                message.textContent = '';
+                message.className = 'hidden text-sm rounded-lg px-3 py-2';
+            }
+            if (status) {
+                status.textContent = 'Verifying Admin password...';
+                status.className = 'text-center font-heading text-xl font-semibold text-[#F59B45] mb-6';
+            }
+
+            try {
+                const body = new URLSearchParams();
+                body.append('employee_id', currentProfileEmployeeId);
+                body.append('password', password);
+
+                const response = await fetch('/api/employees/verify-admin-password.php', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Accept': 'application/json'
+                    },
+                    body: body.toString()
+                });
+                const result = await response.json();
+
+                if (!response.ok || !result.success) {
+                    throw new Error(result.message || 'Admin password verification failed.');
+                }
+
+                passwordInput.value = '';
+                if (message) {
+                    message.textContent = 'Password verified. Opening employee editor...';
+                    message.className = 'text-sm rounded-lg px-3 py-2 bg-green-50 text-green-700';
+                }
+                if (status) {
+                    status.textContent = 'Password Verified';
+                    status.className = 'text-center font-heading text-xl font-semibold text-green-500 mb-6';
+                }
+
+                setTimeout(() => {
+                    closeAdminRfidEditModal();
+                    window.open('/admin/employee-edit?id=' + encodeURIComponent(currentProfileEmployeeId), '_blank');
+                }, 500);
+            } catch (error) {
+                console.error('Admin password verification failed:', error);
+                passwordInput.value = '';
+                if (message) {
+                    message.textContent = error.message || 'Password verification failed. Please try again.';
+                    message.className = 'text-sm rounded-lg px-3 py-2 bg-red-50 text-red-700';
+                }
+                if (status) {
+                    status.textContent = 'Password Not Verified';
+                    status.className = 'text-center font-heading text-xl font-semibold text-red-500 mb-6';
+                }
+            } finally {
+                if (submit && !document.getElementById('modal-admin-rfid-edit').classList.contains('hidden')) {
+                    submit.disabled = false;
+                    submit.textContent = 'Verify Password';
+                }
+            }
+        }
 
         async function verifyAdminRfidForEdit(rfidUid) {
 
@@ -4394,7 +4530,7 @@
                     closeAdminRfidEditModal();
 
                     window.open(
-                        'employee-edit.html?id=' +
+                        '/admin/employee-edit?id=' +
                         encodeURIComponent(
                             currentProfileEmployeeId
                         ),

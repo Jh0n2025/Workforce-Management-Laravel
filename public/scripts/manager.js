@@ -182,13 +182,13 @@ function handleManagerLogout(event) {
     if (window.SharedData) SharedData.clearSession();
     sessionStorage.clear();
 
-    fetch('api/auth/logout.php', {
+    fetch('/api/auth/logout.php', {
         method: 'POST',
         credentials: 'same-origin'
     }).catch(() => { });
 
     setTimeout(() => {
-        window.location.href = 'login.html';
+        window.location.replace('/login');
     }, 700);
 }
 window.handleManagerLogout = handleManagerLogout;
@@ -204,18 +204,14 @@ function managerSession() {
 }
 
 function getManagerTeam() {
-    const session = managerSession();
-
-    if (!session) {
-        return [];
-    }
-
+    // Laravel's authenticated session is the source of truth. Do not require
+    // a separate sessionStorage entry, which may be absent after Laravel login.
     try {
         const xhr = new XMLHttpRequest();
 
         xhr.open(
             'GET',
-            'api/employees/manager-team.php',
+            '/api/employees/manager-team.php',
             false
         );
 
@@ -3036,11 +3032,9 @@ function getTeamTimesheetRecords() {
                 flagged
                     ? 'Incomplete'
                     : calc.status,
-            flagged,
-            review:
-                review.review || 'Pending',
-            managerNote:
-                review.note || ''
+            flagged: flagged || Boolean(rec.flagged),
+            review: review.review || rec.review || 'Pending',
+            managerNote: review.note || rec.managerNote || ''
         };
     });
 }
@@ -3261,6 +3255,196 @@ function renderManagerTimesheets() {
     }).join('');
 }
 
+// ---- Delete timesheet records (manager table only; attendance and schedules remain intact) ----
+let timesheetDeleteSelection = new Set();
+let timesheetDeleteModalRows = [];
+
+function closeTimesheetDeleteModal() {
+    document.getElementById('timesheet-delete-modal')?.classList.add('hidden');
+}
+
+function ensureTimesheetDeleteModal() {
+    let modal = document.getElementById('timesheet-delete-modal');
+    if (modal) return modal;
+
+    modal = document.createElement('div');
+    modal.id = 'timesheet-delete-modal';
+    modal.className = 'hidden fixed inset-0 z-[70] flex items-center justify-center bg-primary/40 backdrop-blur-sm p-4';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-labelledby', 'timesheet-delete-title');
+    document.body.appendChild(modal);
+
+    modal.addEventListener('click', event => {
+        if (event.target === modal || event.target.closest('[data-ts-delete-close]')) {
+            closeTimesheetDeleteModal();
+            return;
+        }
+
+        if (event.target.closest('[data-ts-delete-back]')) {
+            renderTimesheetDeleteListModal();
+            return;
+        }
+
+        if (event.target.closest('[data-ts-delete-next]')) {
+            if (timesheetDeleteSelection.size === 0) {
+                showToast('Select at least one timesheet record to delete.', 'info');
+                return;
+            }
+            renderTimesheetDeleteConfirmation();
+            return;
+        }
+
+        if (event.target.closest('[data-ts-delete-confirm]')) {
+            submitTimesheetDelete();
+        }
+    });
+
+    modal.addEventListener('change', event => {
+        const checkbox = event.target.closest('[data-ts-delete-select]');
+        if (checkbox) {
+            if (checkbox.checked) timesheetDeleteSelection.add(checkbox.value);
+            else timesheetDeleteSelection.delete(checkbox.value);
+            updateTimesheetDeleteSelectionUI();
+            return;
+        }
+
+        const selectAll = event.target.closest('[data-ts-delete-select-all]');
+        if (selectAll) {
+            modal.querySelectorAll('[data-ts-delete-select]').forEach(item => {
+                item.checked = selectAll.checked;
+                if (selectAll.checked) timesheetDeleteSelection.add(item.value);
+                else timesheetDeleteSelection.delete(item.value);
+            });
+            updateTimesheetDeleteSelectionUI();
+        }
+    });
+
+    modal.addEventListener('keydown', event => {
+        if (event.key === 'Escape') closeTimesheetDeleteModal();
+    });
+    return modal;
+}
+
+function openTimesheetDeleteModal() {
+    timesheetDeleteModalRows = Array.isArray(timesheetView) ? [...timesheetView] : [];
+    if (!timesheetDeleteModalRows.length) {
+        showToast('There are no timesheet records in the current table to delete.', 'info');
+        return;
+    }
+    timesheetDeleteSelection = new Set();
+    renderTimesheetDeleteListModal();
+}
+
+function renderTimesheetDeleteListModal() {
+    const modal = ensureTimesheetDeleteModal();
+    const rows = timesheetDeleteModalRows;
+    const rowHtml = rows.map(rec => `
+        <tr class="border-b border-slate-100 last:border-0">
+            <td class="px-3 py-3"><input type="checkbox" data-ts-delete-select value="${escapeHtml(rec.id)}" class="h-4 w-4 rounded border-slate-300 text-red-600 focus:ring-red-500" ${timesheetDeleteSelection.has(rec.id) ? 'checked' : ''} aria-label="Select ${escapeHtml(rec.employeeName)} ${escapeHtml(rec.date)}"></td>
+            <td class="px-3 py-3 font-medium text-slate-800">${escapeHtml(rec.employeeName)}<span class="block text-[11px] text-slate-400">${escapeHtml(rec.employeeId)}</span></td>
+            <td class="px-3 py-3 whitespace-nowrap">${escapeHtml(tsFmtDate(rec.date, true))}</td>
+            <td class="px-3 py-3 whitespace-nowrap">${escapeHtml(tsFmtTime(rec.scheduleStart))} – ${escapeHtml(tsFmtTime(rec.scheduleEnd))}</td>
+            <td class="px-3 py-3 whitespace-nowrap">${escapeHtml(rec.timeIn ? tsFmtTime(rec.timeIn) : '—')}</td>
+            <td class="px-3 py-3 whitespace-nowrap">${escapeHtml(rec.timeOut ? tsFmtTime(rec.timeOut) : '—')}</td>
+            <td class="px-3 py-3 whitespace-nowrap">${escapeHtml(rec.status || '—')}</td>
+        </tr>`).join('');
+
+    modal.innerHTML = `
+        <div class="bg-card rounded-2xl shadow-xl border border-border w-full max-w-6xl max-h-[90vh] flex flex-col">
+            <div class="flex items-start justify-between gap-4 px-6 py-5 border-b border-slate-100">
+                <div><h3 id="timesheet-delete-title" class="text-lg font-bold text-[#0c2340]">Select Timesheet Records</h3><p class="text-xs text-slate-500 mt-1">Select the records to remove from this manager table. Employee attendance and schedules will remain unchanged.</p></div>
+                <button type="button" data-ts-delete-close class="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="px-5 py-4 overflow-auto">
+                <table class="w-full min-w-[800px] text-left text-sm">
+                    <thead class="sticky top-0 bg-slate-50 text-slate-600"><tr>
+                        <th class="px-3 py-3"><input type="checkbox" data-ts-delete-select-all class="h-4 w-4 rounded border-slate-300 text-red-600 focus:ring-red-500" aria-label="Select all records"></th>
+                        <th class="px-3 py-3">Employee</th><th class="px-3 py-3">Date</th><th class="px-3 py-3">Schedule</th><th class="px-3 py-3">Time In</th><th class="px-3 py-3">Time Out</th><th class="px-3 py-3">Status</th>
+                    </tr></thead>
+                    <tbody class="divide-y divide-slate-100">${rowHtml}</tbody>
+                </table>
+            </div>
+            <div class="px-6 py-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">
+                <span id="timesheet-delete-selected-count" class="text-sm text-slate-500">0 selected</span>
+                <div class="flex gap-2"><button type="button" data-ts-delete-close class="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-semibold hover:bg-slate-50">Cancel</button><button type="button" data-ts-delete-next class="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700"><i class="fa-solid fa-trash-can mr-1.5"></i>Delete Selected</button></div>
+            </div>
+        </div>`;
+    modal.classList.remove('hidden');
+    updateTimesheetDeleteSelectionUI();
+}
+
+function updateTimesheetDeleteSelectionUI() {
+    const modal = document.getElementById('timesheet-delete-modal');
+    if (!modal) return;
+    const count = timesheetDeleteSelection.size;
+    const label = modal.querySelector('#timesheet-delete-selected-count');
+    if (label) label.textContent = `${count} selected`;
+    const allBoxes = [...modal.querySelectorAll('[data-ts-delete-select]')];
+    const selectAll = modal.querySelector('[data-ts-delete-select-all]');
+    if (selectAll) {
+        selectAll.checked = allBoxes.length > 0 && allBoxes.every(box => box.checked);
+        selectAll.indeterminate = allBoxes.some(box => box.checked) && !selectAll.checked;
+    }
+}
+
+function renderTimesheetDeleteConfirmation() {
+    const modal = ensureTimesheetDeleteModal();
+    const count = timesheetDeleteSelection.size;
+    modal.innerHTML = `
+        <div class="bg-card rounded-2xl shadow-xl border border-border w-full max-w-md">
+            <div class="p-6">
+                <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-red-100 text-red-600"><i class="fa-solid fa-triangle-exclamation text-xl"></i></div>
+                <h3 id="timesheet-delete-title" class="text-lg font-bold text-[#0c2340] text-center">Are you sure you want to delete?</h3>
+                <p class="mt-2 text-sm text-slate-500 text-center">You selected ${count} timesheet record${count === 1 ? '' : 's'}. They will be removed from the Manager Team Timesheet Records table. Attendance records and employee schedules will not be deleted.</p>
+            </div>
+            <div class="px-6 py-4 border-t border-slate-100 flex justify-end gap-2">
+                <button type="button" data-ts-delete-back class="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-semibold hover:bg-slate-50">Cancel</button>
+                <button type="button" data-ts-delete-confirm class="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700"><i class="fa-solid fa-trash-can mr-1.5"></i>Yes, Delete</button>
+            </div>
+        </div>`;
+}
+
+async function submitTimesheetDelete() {
+    const selected = timesheetDeleteModalRows.filter(rec => timesheetDeleteSelection.has(rec.id));
+    if (!selected.length) {
+        showToast('Select at least one timesheet record to delete.', 'info');
+        renderTimesheetDeleteListModal();
+        return;
+    }
+
+    const confirmButton = document.querySelector('[data-ts-delete-confirm]');
+    if (confirmButton) {
+        confirmButton.disabled = true;
+        confirmButton.textContent = 'Deleting…';
+        confirmButton.classList.add('opacity-60', 'cursor-not-allowed');
+    }
+
+    try {
+        const response = await fetch('/api/timesheet/manager-delete.php', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ records: selected.map(rec => ({ employeeId: rec.employeeId, date: rec.date })) })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.success) throw new Error(result.message || 'Unable to delete selected timesheet records.');
+
+        closeTimesheetDeleteModal();
+        const refreshed = await loadManagerTimesheetsFromDatabase();
+        if (refreshed) renderManagerTimesheets();
+        showToast(result.message || 'Selected timesheet records deleted.', 'success');
+    } catch (error) {
+        console.error('Manager timesheet deletion failed:', error);
+        showToast(error.message || 'Unable to delete selected timesheet records.', 'error');
+        if (confirmButton) {
+            confirmButton.disabled = false;
+            confirmButton.textContent = 'Yes, Delete';
+            confirmButton.classList.remove('opacity-60', 'cursor-not-allowed');
+        }
+    }
+}
+
 // ---- Details modal ----
 function ensureTimesheetModal() {
     let modal = document.getElementById('timesheet-modal');
@@ -3384,45 +3568,61 @@ function openTimesheetDetails(recordId) {
     modal.querySelector('[data-ts-close]')?.focus();
 }
 
-function applyTimesheetAction(recordId, action) {
+async function applyTimesheetAction(recordId, action) {
     const rec = getTeamTimesheetRecords().find(r => r.id === recordId);
     if (!rec) return;
 
     const note = (document.getElementById('timesheet-manager-note')?.value || '').trim();
-    const reviews = loadTimesheetReviews();
-    const entry = reviews.get(rec.id) || { id: rec.id, review: 'Pending', flagged: false };
-    entry.note = note;
-    entry.updatedAt = new Date().toISOString();
-
-    let message;
-    let tone = 'success';
 
     if (action === 'approve') {
         const check = tsCanApprove(rec);
-        if (!check.ok) { showToast(check.reason, 'info'); return; }
-        entry.review = 'Approved';
-        message = `${rec.employeeName}'s timesheet approved`;
-    } else if (action === 'flag') {
-        if (rec.flagged) {
-            entry.flagged = false;
-            entry.review = 'Pending';
-            message = `Flag removed from ${rec.employeeName}'s timesheet`;
-        } else {
-            entry.flagged = true;
-            entry.review = 'Reviewed';
-            message = `${rec.employeeName}'s timesheet marked as incomplete`;
-            tone = 'info';
+        if (!check.ok) {
+            showToast(check.reason, 'info');
+            return;
         }
-    } else {
-        entry.review = entry.review === 'Approved' ? 'Approved' : 'Reviewed';
-        message = `${rec.employeeName}'s timesheet marked as reviewed`;
     }
 
-    reviews.set(rec.id, entry);
-    saveTimesheetReviews(reviews);
-    closeTimesheetModal();
-    renderManagerTimesheets();
-    showToast(message, tone);
+    try {
+        const response = await fetch('/api/timesheet/manager.php', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                employeeId: rec.employeeId,
+                date: rec.date,
+                action,
+                note
+            })
+        });
+
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.success) {
+            throw new Error(result.message || 'Unable to save the timesheet decision.');
+        }
+
+        closeTimesheetModal();
+
+        // Hide approved/flagged rows immediately; the authoritative API then
+        // reloads the queue so the decision remains applied after a refresh.
+        if (action === 'approve' || action === 'flag') {
+            managerTimesheetDbRecords = managerTimesheetDbRecords.filter(item => item.id !== rec.id);
+        }
+        renderManagerTimesheets();
+
+        const tone = action === 'flag' ? 'info' : 'success';
+        showToast(result.message || 'Timesheet decision saved.', tone);
+
+        const refreshed = await loadManagerTimesheetsFromDatabase();
+        if (refreshed) {
+            renderManagerTimesheets();
+        }
+    } catch (error) {
+        console.error('Manager timesheet action failed:', error);
+        showToast(error.message || 'Unable to save the timesheet decision.', 'error');
+    }
 }
 
 // ---- Export PDF report ----
@@ -3835,6 +4035,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const btn = event.target.closest('[data-ts-view]');
         if (btn) openTimesheetDetails(btn.dataset.tsView);
     });
+    document.getElementById('timesheet-delete-open')?.addEventListener('click', openTimesheetDeleteModal);
     document
         .getElementById(
             'manager-file-leave-btn'

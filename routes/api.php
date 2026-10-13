@@ -25,6 +25,7 @@ use App\Http\Controllers\Api\ManagerWorkforceController;
 use App\Http\Controllers\Api\EmployeeTimesheetGrowthController;
 use App\Http\Controllers\Api\AccountProfileController;
 use App\Http\Controllers\Api\RfidAuthController;
+use App\Http\Controllers\Api\ManagerNotificationController;
 
 Route::post('/auth/login', [
     AuthController::class,
@@ -224,6 +225,11 @@ Route::get('/timesheet/manager.php', [
     'managerTimesheets',
 ])->middleware('auth:sanctum');
 
+Route::post('/timesheet/manager.php', [
+    EmployeeTimesheetGrowthController::class,
+    'reviewManagerTimesheet',
+])->middleware('auth:sanctum');
+
 Route::get('/growth/my.php', [
     EmployeeTimesheetGrowthController::class,
     'myGrowth',
@@ -246,7 +252,44 @@ Route::post('/employees/verify-admin-rfid.php', [
     RfidAuthController::class,
     'verifyAdminRfid',
 ])->middleware('auth:sanctum');
+Route::post('/employees/verify-admin-password.php', [
+    RfidAuthController::class,
+    'verifyAdminPasswordForEdit',
+])->middleware(['auth:sanctum', 'throttle:6,1']);
 Route::get('/schedules/my.php', [
     ScheduleShiftRequestController::class,
     'mySchedule',
 ])->middleware('auth:sanctum');
+
+// Manager dashboard API endpoints used by the existing manager frontend.
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/attendance/team-today.php', [
+        ManagerWorkforceController::class,
+        'teamToday',
+    ]);
+
+    Route::get('/analytics/manager.php', [
+        ManagerWorkforceController::class,
+        'analytics',
+    ]);
+
+    Route::get('/analytics/manager-summary.php', [
+        ManagerWorkforceController::class,
+        'summary',
+    ]);
+
+    Route::get('/notifications/manager.php', [
+        ManagerNotificationController::class,
+        'index',
+    ]);
+
+    Route::post('/notifications/manager.php', [
+        ManagerNotificationController::class,
+        'markRead',
+    ]);
+
+    Route::post('/employees/update.php', [
+        EmployeeProfileController::class,
+        'update',
+    ]);
+});

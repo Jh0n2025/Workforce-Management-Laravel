@@ -200,6 +200,44 @@ class EmployeeTimesheetGrowthController extends Controller
                     's.schedule_date', 's.start_time', 's.end_time', 'a.time_in', 'a.time_out', 'a.notes as attendance_notes',
                 ]);
 
+            // Manager reviews for this screen are day-level records (period_start = period_end).
+            // Load the latest decision for each scheduled employee/date so processed rows cannot
+            // reappear in the review queue after the page is refreshed.
+            $employeeIds = $rows->pluck('employee_id')->map(fn ($id) => (string) $id)->unique()->values()->all();
+            $dailyReviewByKey = [];
+            $latestHistoryByReviewId = [];
+
+            if ($employeeIds !== []) {
+                $dailyReviews = DB::table('timesheet_reviews')
+                    ->whereIn('employee_id', $employeeIds)
+                    ->whereBetween('period_start', [$startIso, $todayIso])
+                    ->whereColumn('period_start', '=', 'period_end')
+                    ->orderByDesc('id')
+                    ->get(['id', 'employee_id', 'period_start', 'period_end', 'status', 'remarks']);
+
+                foreach ($dailyReviews as $dailyReview) {
+                    $key = (string) $dailyReview->employee_id . '_' . (string) $dailyReview->period_start;
+                    if (!array_key_exists($key, $dailyReviewByKey)) {
+                        $dailyReviewByKey[$key] = $dailyReview;
+                    }
+                }
+
+                $reviewIds = collect($dailyReviewByKey)->pluck('id')->all();
+                if ($reviewIds !== []) {
+                    $historyRows = DB::table('timesheet_review_history')
+                        ->whereIn('timesheet_review_id', $reviewIds)
+                        ->orderByDesc('id')
+                        ->get(['timesheet_review_id', 'new_status']);
+
+                    foreach ($historyRows as $historyRow) {
+                        $reviewId = (int) $historyRow->timesheet_review_id;
+                        if (!array_key_exists($reviewId, $latestHistoryByReviewId)) {
+                            $latestHistoryByReviewId[$reviewId] = (string) $historyRow->new_status;
+                        }
+                    }
+                }
+            }
+
             $records = [];
             foreach ($rows as $row) {
                 $date = (string) $row->schedule_date;
@@ -208,9 +246,18 @@ class EmployeeTimesheetGrowthController extends Controller
                     continue;
                 }
 
+                $recordId = (string) $row->employee_id . '_' . $date;
+                $dailyReview = $dailyReviewByKey[$recordId] ?? null;
+
+                // Approved and flagged/rejected day-level records are processed. They remain in
+                // the database and history, but no longer belong in the active manager queue.
+                if ($dailyReview && in_array(strtolower((string) $dailyReview->status), ['approved', 'rejected'], true)) {
+                    continue;
+                }
+
                 $timeIn = $this->formatTime($row->time_in ?? null);
                 $timeOut = $this->formatTime($row->time_out ?? null);
-                $remarks = trim((string) ($row->attendance_notes ?? ''));
+                $remarks = trim((string) ($dailyReview->remarks ?? $row->attendance_notes ?? ''));
                 if ($remarks === '') {
                     if ($timeIn && $timeOut) {
                         $remarks = 'Attendance record loaded from the database.';
@@ -221,8 +268,18 @@ class EmployeeTimesheetGrowthController extends Controller
                     }
                 }
 
+                $latestReviewStatus = $dailyReview
+                    ? ($latestHistoryByReviewId[(int) $dailyReview->id] ?? '')
+                    : '';
+
+                // A manager-deleted row is hidden from this table without deleting
+                // its schedule or attendance source data.
+                if (strcasecmp($latestReviewStatus, 'Deleted') === 0) {
+                    continue;
+                }
+
                 $records[] = [
-                    'id' => (string) $row->employee_id . '_' . $date,
+                    'id' => $recordId,
                     'employeeId' => (string) $row->employee_id,
                     'employeeName' => strtoupper($this->employeeName($row)),
                     'position' => (string) ($row->position_name ?? ''),
@@ -233,6 +290,8 @@ class EmployeeTimesheetGrowthController extends Controller
                     'timeOut' => $timeOut,
                     'breakMin' => 60,
                     'remarks' => $remarks,
+                    'review' => $latestReviewStatus === 'Reviewed' ? 'Reviewed' : 'Pending',
+                    'managerNote' => (string) ($dailyReview->remarks ?? ''),
                 ];
             }
 
@@ -240,6 +299,323 @@ class EmployeeTimesheetGrowthController extends Controller
         } catch (Throwable $e) {
             Log::error('Manager timesheet API failed: ' . $e->getMessage());
             return response()->json(['success' => false, 'message' => 'Unable to load manager timesheets.'], 500);
+        }
+    }
+
+    public function deleteManagerTimesheets(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if ($user?->role !== 'manager') {
+            return response()->json(['success' => false, 'message' => 'Manager access required.'], 403);
+        }
+
+        $managerEmployeeId = trim((string) ($user->employee_id ?? ''));
+        if ($managerEmployeeId === '') {
+            return response()->json(['success' => false, 'message' => 'Manager session not found.'], 401);
+        }
+
+        $data = $request->validate([
+            'records' => ['required', 'array', 'min:1', 'max:200'],
+            'records.*.employeeId' => ['required', 'string', 'max:50'],
+            'records.*.date' => ['required', 'date_format:Y-m-d'],
+        ]);
+
+        try {
+            $manager = DB::table('employees')
+                ->where('employee_id', $managerEmployeeId)
+                ->first(['id']);
+
+            if (!$manager) {
+                return response()->json(['success' => false, 'message' => 'Manager employee record not found.'], 404);
+            }
+
+            $records = collect($data['records'])
+                ->unique(fn ($record) => trim((string) $record['employeeId']) . '_' . (string) $record['date'])
+                ->values();
+
+            $deletedCount = DB::transaction(function () use ($records, $manager, $user) {
+                $count = 0;
+                $now = now();
+
+                foreach ($records as $record) {
+                    $employeeId = trim((string) $record['employeeId']);
+                    $date = (string) $record['date'];
+
+                    $employee = DB::table('employees')
+                        ->where('employee_id', $employeeId)
+                        ->where('manager_id', $manager->id)
+                        ->where('employment_status', '<>', 'terminated')
+                        ->first(['employee_id']);
+
+                    if (!$employee) {
+                        throw new \RuntimeException('One or more selected records are not assigned to your team. Nothing was deleted.');
+                    }
+
+                    $scheduleExists = DB::table('schedules')
+                        ->where('employee_id', $employeeId)
+                        ->where('schedule_date', $date)
+                        ->where('status', '<>', 'cancelled')
+                        ->exists();
+
+                    if (!$scheduleExists) {
+                        throw new \RuntimeException('One or more selected timesheet records no longer exist. Refresh the page and try again.');
+                    }
+
+                    $review = DB::table('timesheet_reviews')
+                        ->where('employee_id', $employeeId)
+                        ->where('period_start', $date)
+                        ->where('period_end', $date)
+                        ->orderByDesc('id')
+                        ->lockForUpdate()
+                        ->first();
+
+                    if ($review && in_array(strtolower((string) $review->status), ['approved', 'rejected'], true)) {
+                        throw new \RuntimeException('Approved or flagged timesheets cannot be deleted from this list. Refresh the page and select only active records.');
+                    }
+
+                    if (!$review) {
+                        $reviewId = (int) DB::table('timesheet_reviews')->insertGetId([
+                            'employee_id' => $employeeId,
+                            'period_start' => $date,
+                            'period_end' => $date,
+                            'status' => 'pending',
+                            'reviewed_by' => $user->id,
+                            'reviewed_at' => $now,
+                            'remarks' => 'Removed from Manager Team Timesheet Records.',
+                            'created_at' => $now,
+                            'updated_at' => $now,
+                        ]);
+                        $previousStatus = 'Pending';
+                    } else {
+                        $reviewId = (int) $review->id;
+                        $latestHistoryStatus = DB::table('timesheet_review_history')
+                            ->where('timesheet_review_id', $reviewId)
+                            ->orderByDesc('id')
+                            ->value('new_status');
+
+                        if (strcasecmp((string) $latestHistoryStatus, 'Deleted') === 0) {
+                            continue;
+                        }
+                        $previousStatus = (string) ($latestHistoryStatus ?: ucfirst((string) $review->status));
+                    }
+
+                    DB::table('timesheet_review_history')->insert([
+                        'timesheet_review_id' => $reviewId,
+                        'employee_id' => $employeeId,
+                        'period_start' => $date,
+                        'period_end' => $date,
+                        'previous_status' => $previousStatus,
+                        'new_status' => 'Deleted',
+                        'action' => 'Timesheet Deleted',
+                        'reviewed_by' => $user->id,
+                        'reviewed_at' => $now,
+                        'reason' => 'Removed from Team Timesheet Records by manager.',
+                    ]);
+
+                    $count++;
+                }
+
+                return $count;
+            });
+
+            return response()->json([
+                'success' => true,
+                'deleted' => $deletedCount,
+                'message' => $deletedCount === 1
+                    ? '1 timesheet record removed from the manager table.'
+                    : $deletedCount . ' timesheet records removed from the manager table.',
+            ]);
+        } catch (\RuntimeException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        } catch (Throwable $e) {
+            Log::error('Manager timesheet deletion failed: ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => 'Unable to delete the selected timesheet records.'], 500);
+        }
+    }
+
+    public function reviewManagerTimesheet(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if ($user?->role !== 'manager') {
+            return response()->json(['success' => false, 'message' => 'Manager access required.'], 403);
+        }
+
+        $managerEmployeeId = trim((string) ($user->employee_id ?? ''));
+        if ($managerEmployeeId === '') {
+            return response()->json(['success' => false, 'message' => 'Manager session not found.'], 401);
+        }
+
+        $data = $request->validate([
+            'employeeId' => ['required', 'string', 'max:50'],
+            'date' => ['required', 'date_format:Y-m-d'],
+            'action' => ['required', 'in:review,approve,flag'],
+            'note' => ['nullable', 'string', 'max:300'],
+        ]);
+
+        try {
+            $manager = DB::table('employees')
+                ->where('employee_id', $managerEmployeeId)
+                ->first(['id']);
+
+            if (!$manager) {
+                return response()->json(['success' => false, 'message' => 'Manager employee record not found.'], 404);
+            }
+
+            $employeeId = trim((string) $data['employeeId']);
+            $date = (string) $data['date'];
+            $action = (string) $data['action'];
+
+            $employee = DB::table('employees')
+                ->where('employee_id', $employeeId)
+                ->where('manager_id', $manager->id)
+                ->where('employment_status', '<>', 'terminated')
+                ->first(['employee_id']);
+
+            if (!$employee) {
+                return response()->json(['success' => false, 'message' => 'This employee is not assigned to your team.'], 403);
+            }
+
+            $schedule = DB::table('schedules')
+                ->where('employee_id', $employeeId)
+                ->where('schedule_date', $date)
+                ->where('status', '<>', 'cancelled')
+                ->orderByDesc('id')
+                ->first(['id']);
+
+            if (!$schedule) {
+                return response()->json(['success' => false, 'message' => 'No active schedule exists for this employee on that date.'], 404);
+            }
+
+            if ($action === 'approve') {
+                $attendance = DB::table('attendance_records')
+                    ->where('employee_id', $employeeId)
+                    ->where('attendance_date', $date)
+                    ->orderByDesc('id')
+                    ->first(['time_in', 'time_out']);
+
+                if (empty($attendance?->time_in) || empty($attendance?->time_out)) {
+                    return response()->json(['success' => false, 'message' => 'A timesheet can only be approved after both clock-in and clock-out are recorded.'], 422);
+                }
+
+                $in = strtotime((string) $attendance->time_in);
+                $out = strtotime((string) $attendance->time_out);
+                if ($in === false || $out === false || $out <= $in) {
+                    return response()->json(['success' => false, 'message' => 'The attendance times are invalid and cannot be approved.'], 422);
+                }
+            }
+
+            $note = trim((string) ($data['note'] ?? ''));
+            if ($action === 'flag' && $note === '') {
+                $note = 'Flagged as inappropriate / marked as incomplete by manager.';
+            } elseif ($action === 'approve' && $note === '') {
+                $note = 'Approved by manager.';
+            }
+
+            $result = DB::transaction(function () use ($employeeId, $date, $action, $note, $user) {
+                $review = DB::table('timesheet_reviews')
+                    ->where('employee_id', $employeeId)
+                    ->where('period_start', $date)
+                    ->where('period_end', $date)
+                    ->orderByDesc('id')
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($review && in_array((string) $review->status, ['approved', 'rejected'], true)) {
+                    return [
+                        'http' => 409,
+                        'body' => ['success' => false, 'message' => 'This timesheet has already been approved or flagged.'],
+                    ];
+                }
+
+                if ($review) {
+                    $latestHistoryStatus = DB::table('timesheet_review_history')
+                        ->where('timesheet_review_id', $review->id)
+                        ->orderByDesc('id')
+                        ->value('new_status');
+                    if (strcasecmp((string) $latestHistoryStatus, 'Deleted') === 0) {
+                        return [
+                            'http' => 409,
+                            'body' => ['success' => false, 'message' => 'This timesheet has already been removed from the manager table.'],
+                        ];
+                    }
+                }
+
+                $previousStatus = 'Pending';
+                if ($review) {
+                    $latestHistoryStatus = DB::table('timesheet_review_history')
+                        ->where('timesheet_review_id', $review->id)
+                        ->orderByDesc('id')
+                        ->value('new_status');
+                    $previousStatus = (string) ($latestHistoryStatus ?: ucfirst((string) $review->status));
+                }
+
+                $databaseStatus = match ($action) {
+                    'approve' => 'approved',
+                    'flag' => 'rejected',
+                    default => 'pending',
+                };
+                $historyStatus = match ($action) {
+                    'approve' => 'Approved',
+                    'flag' => 'Flagged',
+                    default => 'Reviewed',
+                };
+                $actionLabel = match ($action) {
+                    'approve' => 'Timesheet Approved',
+                    'flag' => 'Timesheet Flagged / Marked Incomplete',
+                    default => 'Timesheet Reviewed',
+                };
+
+                $now = now();
+                $reviewValues = [
+                    'status' => $databaseStatus,
+                    'reviewed_by' => $user->id,
+                    'reviewed_at' => $now,
+                    'remarks' => $note !== '' ? $note : null,
+                    'updated_at' => $now,
+                ];
+
+                if ($review) {
+                    DB::table('timesheet_reviews')->where('id', $review->id)->update($reviewValues);
+                    $reviewId = (int) $review->id;
+                } else {
+                    $reviewId = (int) DB::table('timesheet_reviews')->insertGetId(array_merge($reviewValues, [
+                        'employee_id' => $employeeId,
+                        'period_start' => $date,
+                        'period_end' => $date,
+                        'created_at' => $now,
+                    ]));
+                }
+
+                DB::table('timesheet_review_history')->insert([
+                    'timesheet_review_id' => $reviewId,
+                    'employee_id' => $employeeId,
+                    'period_start' => $date,
+                    'period_end' => $date,
+                    'previous_status' => $previousStatus,
+                    'new_status' => $historyStatus,
+                    'action' => $actionLabel,
+                    'reviewed_by' => $user->id,
+                    'reviewed_at' => $now,
+                    'reason' => $note !== '' ? $note : null,
+                ]);
+
+                return [
+                    'http' => 200,
+                    'body' => [
+                        'success' => true,
+                        'message' => match ($action) {
+                            'approve' => 'Timesheet approved successfully.',
+                            'flag' => 'Timesheet flagged and removed from the active review list.',
+                            default => 'Timesheet marked as reviewed.',
+                        },
+                    ],
+                ];
+            });
+
+            return response()->json($result['body'], $result['http']);
+        } catch (Throwable $e) {
+            Log::error('Manager timesheet review failed: ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => 'Unable to save the timesheet decision.'], 500);
         }
     }
 
@@ -334,6 +710,7 @@ class EmployeeTimesheetGrowthController extends Controller
                 ->where('employee_id', $employeeId)
                 ->where('period_start', '>=', $yearStart)
                 ->where('period_end', '<=', $yearEnd)
+                ->whereColumn('period_start', '<', 'period_end')
                 ->selectRaw("COUNT(*) AS total_reviews, SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved_reviews")
                 ->first();
             $totalReviews = (int) ($timesheetData->total_reviews ?? 0);

@@ -113,6 +113,7 @@ class TimesheetApprovalController extends Controller
                           AND tr2.period_end = tr.period_end
                     )
                 ")
+                ->whereColumn('tr.period_start', '<', 'tr.period_end')
                 ->orderByDesc('tr.period_start')
                 ->orderByDesc('tr.id')
                 ->get([

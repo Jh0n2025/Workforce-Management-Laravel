@@ -2626,13 +2626,13 @@ function handleEmployeeLogout(event) {
     if (window.SharedData) SharedData.clearSession();
     sessionStorage.clear();
 
-    fetch('api/auth/logout.php', {
+    fetch('/api/auth/logout.php', {
         method: 'POST',
         credentials: 'same-origin'
     }).catch(() => { });
 
     setTimeout(() => {
-        window.location.href = 'login.html';
+        window.location.replace('/login');
     }, 700);
 }
 window.handleEmployeeLogout = handleEmployeeLogout;
